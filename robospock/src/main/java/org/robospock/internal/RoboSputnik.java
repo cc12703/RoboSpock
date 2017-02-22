@@ -17,6 +17,7 @@ import org.robolectric.internal.SdkEnvironment;
 import org.robolectric.internal.bytecode.ClassHandler;
 import org.robolectric.internal.bytecode.InstrumentationConfiguration;
 import org.robolectric.internal.bytecode.RobolectricInternals;
+import org.robolectric.internal.bytecode.ShadowInvalidator;
 import org.robolectric.internal.bytecode.ShadowMap;
 import org.robolectric.internal.bytecode.ShadowWrangler;
 import org.robolectric.internal.dependency.CachedDependencyResolver;
@@ -70,7 +71,7 @@ public class RoboSputnik extends Runner implements Filterable, Sortable {
         final Config config = getConfig(clazz);
         AndroidManifest appManifest = getAppManifest(config);
         if (instrumentingClassLoaderFactory == null) {
-            instrumentingClassLoaderFactory = new InstrumentingClassLoaderFactory(createClassLoaderConfig(), getJarResolver());
+            instrumentingClassLoaderFactory = new InstrumentingClassLoaderFactory(createClassLoaderConfig(config), getJarResolver());
         }
         SdkEnvironment sdkEnvironment = instrumentingClassLoaderFactory.getSdkEnvironment(new SdkConfig(pickSdkVersion(config, appManifest)));
 
@@ -186,8 +187,9 @@ public class RoboSputnik extends Runner implements Filterable, Sortable {
         return new AndroidManifest(manifestFile, resDir, assetDir, packageName);
     }
 
-    public InstrumentationConfiguration createClassLoaderConfig() {
+    public InstrumentationConfiguration createClassLoaderConfig(Config config) {
         return InstrumentationConfiguration.newBuilder()
+                .withConfig(config)
 //                .doNotAquireClass(ShadowMap.class.getName())
                 .doNotAcquireClass(DependencyResolver.class.getName())
                 .build();
@@ -195,10 +197,12 @@ public class RoboSputnik extends Runner implements Filterable, Sortable {
 
 //    protected Class<? extends TestLifecycle> getTestLifecycleClass() {
 
-    public static void injectClassHandler(ClassLoader robolectricClassLoader, ClassHandler classHandler) {
+    public static void injectClassHandler(ClassLoader robolectricClassLoader, ClassHandler classHandler,
+                                          ShadowInvalidator invalidator) {
         String className = RobolectricInternals.class.getName();
         Class<?> robolectricInternalsClass = ReflectionHelpers.loadClass(robolectricClassLoader, className);
         ReflectionHelpers.setStaticField(robolectricInternalsClass, "classHandler", classHandler);
+        ReflectionHelpers.setStaticField(robolectricInternalsClass, "shadowInvalidator", invalidator);
     }
 
 //    @Override
@@ -300,9 +304,13 @@ public class RoboSputnik extends Runner implements Filterable, Sortable {
             config = new Config.Implementation(config, globalConfig);
         }
 
-        Config classConfig = clazz.getAnnotation(Config.class);
-        if (classConfig != null) {
-            config = new Config.Implementation(config, classConfig);
+        Class<?> curClazz = clazz;
+        while(curClazz != null) {
+            Config classConfig = curClazz.getAnnotation(Config.class);
+            if (classConfig != null) {
+                config = new Config.Implementation(config, classConfig);
+            }
+            curClazz = curClazz.getSuperclass();
         }
 
         return config;
@@ -331,7 +339,7 @@ public class RoboSputnik extends Runner implements Filterable, Sortable {
         }
 
         ClassHandler classHandler = getClassHandler(sdkEnvironment, shadowMap);
-        injectClassHandler(sdkEnvironment.getRobolectricClassLoader(), classHandler);
+        injectClassHandler(sdkEnvironment.getRobolectricClassLoader(), classHandler, sdkEnvironment.getShadowInvalidator());
     }
 
     private ClassHandler getClassHandler(SdkEnvironment sdkEnvironment, ShadowMap shadowMap) {
